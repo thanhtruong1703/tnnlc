@@ -153,6 +153,9 @@
     </div> 
 
     <script>
+        ////
+
+
         // tạo nơi lưu trữ 
         let db;
         function openDB(callback) {
@@ -160,14 +163,22 @@
                 callback();
                 return;
             }
-            const request = indexedDB.open("FileStorageDB", 1);
+        
+            const request = indexedDB.open("FileStorageDB", 2); // Sử dụng chung một DB
         
             request.onupgradeneeded = function (event) {
                 db = event.target.result;
+        
                 if (!db.objectStoreNames.contains("files")) {
                     db.createObjectStore("files", { keyPath: "id" });
                 }
+        
+                if (!db.objectStoreNames.contains("rank")) {
+                    const rankStore = db.createObjectStore("rank", { keyPath: "name" }); // Sử dụng tên làm key
+                    rankStore.createIndex("score", "score", { unique: false });
+                }
             };
+        
             request.onsuccess = function (event) {
                 db = event.target.result;
                 console.log("Database opened successfully!");
@@ -178,6 +189,7 @@
                 console.error("Error opening database", event.target.error);
             };
         }
+        
         
         // Hàm lưu file vào IndexedDB
         function saveFileToIndexedDB() {
@@ -229,8 +241,68 @@
                     };
                 });
             }
+
+            //// lưu file lên json
+            function uploadToGitHub(fileName, fileContent) {
+                const githubUsername = "your-github-username";
+                const repoName = "your-repo-name";
+                const branch = "main";
+                const token = "your-github-personal-access-token"; // Không để lộ trên client, dùng backend nếu cần
+                const apiUrl = `https://api.github.com/repos/${githubUsername}/${repoName}/contents/${fileName}`;
+            
+                const fileData = {
+                    message: "Upload file",
+                    content: btoa(fileContent), // Chuyển thành base64
+                    branch: branch
+                };
+            
+                fetch(apiUrl, {
+                    method: "PUT",
+                    headers: {
+                        "Authorization": `token ${token}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(fileData)
+                }).then(response => response.json())
+                  .then(data => console.log("File uploaded:", data))
+                  .catch(error => console.error("Upload failed:", error));
+            }
+            uploadToGitHub(file.name, fileData);            
             
         }
+        //// lấy file từ json  nếu ko thấy ///////////////////////////////////////////////////////////////////////////////////
+        function fetchFromGitHub(fileName, callback) {
+            const githubUsername = "your-github-username";
+            const repoName = "your-repo-name";
+            const apiUrl = `https://raw.githubusercontent.com/${githubUsername}/${repoName}/main/${fileName}`;
+        
+            fetch(apiUrl)
+                .then(response => response.ok ? response.text() : Promise.reject("File not found"))
+                .then(data => {
+                    callback(data); // Trả về nội dung file
+                })
+                .catch(error => console.error("Fetch failed:", error));
+        }
+        ///  nếu indexed rỗng cập nhật mới
+        openDB(() => {
+            const transaction = db.transaction(["files"], "readonly");
+            const store = transaction.objectStore("files");
+            const request = store.getAll();
+        
+            request.onsuccess = function (event) {
+                if (event.target.result.length === 0) { // Nếu không có dữ liệu
+                    fetchFromGitHub("backup.json", data => {
+                        const parsedData = JSON.parse(data);
+                        parsedData.forEach(file => {
+                            const tx = db.transaction(["files"], "readwrite");
+                            tx.objectStore("files").put(file);
+                        });
+                    });
+                }
+            };
+        });
+                
+
         
         // Hàm hiển thị thông báo
         function showFeedback(message, color) {
@@ -452,10 +524,53 @@
         
         
 
-        
+        //// gọi tên người làm         
+        let userlocal = JSON.parse(localStorage.getItem("userlogin")) || [];
 
         //// hàm tạo bảng xếp hạng
          // tạo bảng rank
+         // lưu tạo bảng rank
+         function saveRank(name, newScore) {
+            openDB(() => {
+                const transaction = db.transaction(["rank"], "readwrite");
+                const store = transaction.objectStore("rank");
+        
+                const request = store.get(name);
+        
+                request.onsuccess = function () {
+                    const existingEntry = request.result;
+        
+                    if (existingEntry) {
+                        // Cộng dồn điểm số mới vào điểm số cũ
+                        existingEntry.score += parseFloat(newScore);
+        
+                        const updateRequest = store.put(existingEntry);
+                        updateRequest.onsuccess = function () {
+                            console.log(`Score updated successfully! New total score: ${existingEntry.score}`);
+                        };
+                        updateRequest.onerror = function () {
+                            console.error("Error updating score");
+                        };
+                    } else {
+                        // Nếu chưa có dữ liệu, thêm mới
+                        const newEntry = { name: name, score: parseFloat(newScore) };
+                        const addRequest = store.add(newEntry);
+        
+                        addRequest.onsuccess = function () {
+                            console.log("New rank data added successfully!");
+                        };
+                        addRequest.onerror = function () {
+                            console.error("Error adding new rank data");
+                        };
+                    }
+                };
+        
+                request.onerror = function () {
+                    console.error("Error checking existing entry");
+                };
+            });
+        }
+        //////////////////////  
 
         let questions = [];
         // Sự kiện đọc file Word
@@ -612,17 +727,17 @@
             document.getElementById('fileListSection').style.display = 'none';
 
             saveRank(userlocal.name, finalScore.toFixed(1));
-            
+
         }
 
         // Quay lại phần nhập câu hỏi
         function backToStart() {
             questions = [];
             document.getElementById('quizContent').innerHTML = '';
-            document.getElementById('startBtn').style.display = 'block';
+            document.getElementById('startBtn').style.display = 'none';
             document.getElementById('fileListSection').style.display = 'block';
-            document.getElementById('inputSection').style.display = 'block';
-            document.getElementById('manualQuestionSection').style.display = 'block';
+            document.getElementById('inputSection').style.display = 'none';
+            document.getElementById('manualQuestionSection').style.display = 'none';
             document.getElementById('submitBtn').style.display = 'none';
             document.getElementById('backBtn').style.display = 'none';
             document.getElementById('add-question-form').reset();
